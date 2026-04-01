@@ -136,8 +136,10 @@ func (p *Pipeline) process(ctx context.Context, in Task, out chan<- Result) {
 	}
 
 	for chunk := range chunks {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return
+		default:
 		}
 		p.emit(ctx, out, Result{Doc: chunk})
 	}
