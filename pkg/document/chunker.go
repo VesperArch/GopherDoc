@@ -2,21 +2,19 @@ package document
 
 import (
 	"bytes"
-	"fmt"
 	"iter"
+	"strconv"
 	"unicode/utf8"
-
-	metacopy "github.com/vesperarch/gopherdoc/internal/copy"
 )
 
 // WithParagraphs returns an iterator that yields one Document per
-// paragraph (split on "\n\n"). Each yielded Document carries a deep
-// copy of the source metadata and a chunk-specific ID. Empty
-// paragraphs after trimming are skipped. Iteration stops early if the
-// caller breaks out of the range loop.
+// paragraph (split on "\n\n"). Each yielded Document shares the source
+// document's Metadata map by reference — callers must not mutate
+// chunk.Metadata without first copying it. Empty paragraphs are skipped.
 func WithParagraphs(doc *Document) iter.Seq[*Document] {
 	return func(yield func(*Document) bool) {
 		parts := bytes.Split(doc.Content, []byte("\n\n"))
+		prefix := doc.ID + "#p"
 		idx := 0
 		for _, raw := range parts {
 			text := bytes.TrimSpace(raw)
@@ -24,9 +22,9 @@ func WithParagraphs(doc *Document) iter.Seq[*Document] {
 				continue
 			}
 			chunk := &Document{
-				ID:       fmt.Sprintf("%s#p%d", doc.ID, idx),
+				ID:       buildChunkID(prefix, idx),
 				Content:  text,
-				Metadata: metacopy.Metadata(doc.Metadata),
+				Metadata: doc.Metadata,
 			}
 			idx++
 			if !yield(chunk) {
@@ -37,18 +35,14 @@ func WithParagraphs(doc *Document) iter.Seq[*Document] {
 }
 
 // WithSlidingWindow returns an iterator that yields fixed-size chunks
-// with a configurable overlap between consecutive windows. Each chunk
-// is a zero-copy sub-slice of doc.Content (shares the backing array),
-// guaranteeing O(1) memory per emitted Document.
+// with a configurable overlap. Each chunk is a zero-copy sub-slice of
+// doc.Content and shares the source document's Metadata map by reference
+// — callers must not mutate chunk.Metadata without first copying it.
 //
 // Boundary adjustment: neither the chunk end nor the overlap start will
 // split a UTF-8 rune or break a word. When a boundary falls inside a
-// word, the algorithm retreats to the nearest whitespace (space or
-// newline). If no whitespace exists (a single token longer than
-// chunkSize), it falls back to the nearest valid rune boundary.
-//
-// Each yielded Document carries a sequential ID ("{docID}#w{index}")
-// and a deep copy of the source metadata.
+// word the algorithm retreats to the nearest whitespace. If no whitespace
+// exists it falls back to the nearest valid rune boundary.
 func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Document] {
 	return func(yield func(*Document) bool) {
 		content := doc.Content
@@ -63,6 +57,7 @@ func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Docu
 			overlapSize = chunkSize - 1
 		}
 
+		prefix := doc.ID + "#w"
 		idx := 0
 		pos := 0
 
@@ -75,9 +70,9 @@ func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Docu
 			}
 
 			chunk := &Document{
-				ID:       fmt.Sprintf("%s#w%d", doc.ID, idx),
+				ID:       buildChunkID(prefix, idx),
 				Content:  content[pos:end],
-				Metadata: metacopy.Metadata(doc.Metadata),
+				Metadata: doc.Metadata,
 			}
 			idx++
 			if !yield(chunk) {
@@ -96,6 +91,17 @@ func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Docu
 			pos = retreatOverlapStart(content, pos+1, next, end)
 		}
 	}
+}
+
+// buildChunkID returns "{prefix}{n}" with a single heap allocation for
+// the result string. The intermediate byte buffer is stack-allocated as
+// long as prefix+digits fit within 256 bytes, which covers all realistic
+// document IDs.
+func buildChunkID(prefix string, n int) string {
+	var arr [256]byte
+	b := append(arr[:0], prefix...)
+	b = strconv.AppendInt(b, int64(n), 10)
+	return string(b)
 }
 
 // retreatChunkEnd moves targetEnd backwards to the nearest position
@@ -141,3 +147,4 @@ func retreatOverlapStart(content []byte, minPos, target, fallback int) int {
 func isWhitespace(b byte) bool {
 	return b == ' ' || b == '\n'
 }
+

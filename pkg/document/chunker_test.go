@@ -72,40 +72,28 @@ func TestWithParagraphs(t *testing.T) {
 	}
 }
 
-func TestWithParagraphs_MetadataIsolation(t *testing.T) {
+func TestWithParagraphs_MetadataSharing(t *testing.T) {
+	// Chunks share doc.Metadata by reference. Mutations to chunk.Metadata
+	// propagate to the source document and to all sibling chunks.
+	// Callers that need per-chunk isolation must copy before mutating.
 	doc := &Document{
-		ID:      "doc-iso",
+		ID:      "doc-share",
 		Content: []byte("A\n\nB"),
-		Metadata: map[string]any{
-			"key":    "original",
-			"tags":   []string{"a", "b"},
-			"nested": map[string]any{"inner": "value"},
-			"items":  []any{1, "two", []byte{0xFF}},
-		},
+		Metadata: map[string]any{"key": "original"},
 	}
 
+	var chunks []*Document
 	for chunk := range WithParagraphs(doc) {
-		chunk.Metadata["key"] = "mutated"
-		chunk.Metadata["tags"].([]string)[0] = "MUTATED"
-		chunk.Metadata["nested"].(map[string]any)["inner"] = "MUTATED"
-		chunk.Metadata["items"].([]any)[1] = "MUTATED"
-		chunk.Metadata["items"].([]any)[2].([]byte)[0] = 0x00
+		chunks = append(chunks, chunk)
 	}
 
-	if doc.Metadata["key"] != "original" {
-		t.Fatal("shallow key mutation leaked")
+	chunks[0].Metadata["key"] = "mutated"
+
+	if doc.Metadata["key"] != "mutated" {
+		t.Fatal("expected mutation to propagate to source document")
 	}
-	if doc.Metadata["tags"].([]string)[0] != "a" {
-		t.Fatal("[]string mutation leaked into source")
-	}
-	if doc.Metadata["nested"].(map[string]any)["inner"] != "value" {
-		t.Fatal("nested map mutation leaked into source")
-	}
-	if doc.Metadata["items"].([]any)[1] != "two" {
-		t.Fatal("[]any mutation leaked into source")
-	}
-	if doc.Metadata["items"].([]any)[2].([]byte)[0] != 0xFF {
-		t.Fatal("[]byte mutation leaked into source")
+	if chunks[1].Metadata["key"] != "mutated" {
+		t.Fatal("expected mutation to propagate to sibling chunk")
 	}
 }
 

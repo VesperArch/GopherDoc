@@ -155,31 +155,28 @@ func TestWithSlidingWindow_IDs(t *testing.T) {
 	}
 }
 
-func TestWithSlidingWindow_MetadataIsolation(t *testing.T) {
+func TestWithSlidingWindow_MetadataSharing(t *testing.T) {
+	// Chunks share doc.Metadata by reference. Mutations to chunk.Metadata
+	// propagate to the source document and to all sibling chunks.
+	// Callers that need per-chunk isolation must copy before mutating.
 	doc := &Document{
-		ID:      "iso",
+		ID:      "share",
 		Content: []byte("aaa bbb ccc ddd"),
-		Metadata: map[string]any{
-			"key":    "original",
-			"tags":   []string{"x", "y"},
-			"nested": map[string]any{"deep": "safe"},
-		},
+		Metadata: map[string]any{"key": "original"},
 	}
 
+	var chunks []*Document
 	for chunk := range WithSlidingWindow(doc, 8, 0) {
-		chunk.Metadata["key"] = "mutated"
-		chunk.Metadata["tags"].([]string)[0] = "MUTATED"
-		chunk.Metadata["nested"].(map[string]any)["deep"] = "MUTATED"
+		chunks = append(chunks, chunk)
 	}
 
-	if doc.Metadata["key"] != "original" {
-		t.Fatal("shallow key mutation leaked")
+	chunks[0].Metadata["key"] = "mutated"
+
+	if doc.Metadata["key"] != "mutated" {
+		t.Fatal("expected mutation to propagate to source document")
 	}
-	if doc.Metadata["tags"].([]string)[0] != "x" {
-		t.Fatal("[]string mutation leaked into source")
-	}
-	if doc.Metadata["nested"].(map[string]any)["deep"] != "safe" {
-		t.Fatal("nested map mutation leaked into source")
+	if chunks[1].Metadata["key"] != "mutated" {
+		t.Fatal("expected mutation to propagate to sibling chunk")
 	}
 }
 
