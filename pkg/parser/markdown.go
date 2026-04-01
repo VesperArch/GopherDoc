@@ -66,7 +66,11 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 				continue
 			}
 			state = stateBody
-			fallthrough // First line wasn't a fence; treat as body.
+			fallthrough
+
+		case stateBody:
+			body.WriteString(line)
+			body.WriteByte('\n')
 
 		case stateMetadata:
 			if strings.TrimSpace(line) == frontMatterFence {
@@ -76,10 +80,6 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 			if k, v, ok := parseMetaLine(line); ok {
 				meta[k] = v
 			}
-
-		case stateBody:
-			body.WriteString(line)
-			body.WriteByte('\n')
 		}
 	}
 
