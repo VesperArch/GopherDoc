@@ -14,27 +14,66 @@ func TestMarkdownParser_ImplementsInterface(t *testing.T) {
 
 func TestMarkdownParser_Parse(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		max     int64
-		wantLen int
-		wantErr bool
+		name     string
+		input    string
+		max      int64
+		wantBody string
+		wantMeta map[string]any
+		wantErr  bool
 	}{
 		{
-			name:    "happy_path",
-			input:   "# Title\n\nBody text.",
-			wantLen: 19,
+			name:     "happy_path",
+			input:    "# Title\n\nBody text.",
+			wantBody: "# Title\n\nBody text.",
 		},
 		{
-			name:    "empty_input",
-			input:   "",
-			wantLen: 0,
+			name:     "empty_input",
+			input:    "",
+			wantBody: "",
 		},
 		{
-			name:    "truncated_by_limit",
-			input:   strings.Repeat("a", 100),
-			max:     10,
-			wantLen: 10,
+			name:     "truncated_by_limit",
+			input:    strings.Repeat("a", 100),
+			max:      10,
+			wantBody: strings.Repeat("a", 10),
+		},
+		{
+			name:  "with_front_matter",
+			input: "---\ntitle: Hello World\nauthor: GopherDoc\n---\n# Heading\n\nParagraph.",
+			wantBody: "# Heading\n\nParagraph.",
+			wantMeta: map[string]any{
+				"title":  "Hello World",
+				"author": "GopherDoc",
+			},
+		},
+		{
+			name:     "no_front_matter",
+			input:    "Just plain text.\nSecond line.",
+			wantBody: "Just plain text.\nSecond line.",
+		},
+		{
+			name:  "malformed_front_matter",
+			input: "---\ntitle: Valid\nbroken line without colon\n---\nBody here.",
+			wantBody: "Body here.",
+			wantMeta: map[string]any{
+				"title": "Valid",
+			},
+		},
+		{
+			name:  "empty_body",
+			input: "---\ntag: value\n---",
+			wantBody: "",
+			wantMeta: map[string]any{
+				"tag": "value",
+			},
+		},
+		{
+			name:  "unclosed_front_matter",
+			input: "---\nkey: val\norphan line",
+			wantBody: "",
+			wantMeta: map[string]any{
+				"key": "val",
+			},
 		},
 	}
 
@@ -52,11 +91,16 @@ func TestMarkdownParser_Parse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got := len(doc.Content); got != tc.wantLen {
-				t.Errorf("content length = %d, want %d", got, tc.wantLen)
+			if got := string(doc.Content); got != tc.wantBody {
+				t.Errorf("content = %q, want %q", got, tc.wantBody)
 			}
 			if doc.Metadata["format"] != "markdown" {
 				t.Errorf("metadata format = %v, want markdown", doc.Metadata["format"])
+			}
+			for k, want := range tc.wantMeta {
+				if got := doc.Metadata[k]; got != want {
+					t.Errorf("metadata[%q] = %v, want %v", k, got, want)
+				}
 			}
 		})
 	}
