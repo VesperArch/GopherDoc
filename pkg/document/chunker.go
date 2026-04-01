@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"iter"
 	"unicode/utf8"
+
+	metacopy "github.com/vesperarch/gopherdoc/internal/copy"
 )
 
 // WithParagraphs returns an iterator that yields one Document per
@@ -24,7 +26,7 @@ func WithParagraphs(doc *Document) iter.Seq[*Document] {
 			chunk := &Document{
 				ID:       fmt.Sprintf("%s#p%d", doc.ID, idx),
 				Content:  text,
-				Metadata: copyMeta(doc.Metadata),
+				Metadata: metacopy.Metadata(doc.Metadata),
 			}
 			idx++
 			if !yield(chunk) {
@@ -75,7 +77,7 @@ func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Docu
 			chunk := &Document{
 				ID:       fmt.Sprintf("%s#w%d", doc.ID, idx),
 				Content:  content[pos:end],
-				Metadata: copyMeta(doc.Metadata),
+				Metadata: metacopy.Metadata(doc.Metadata),
 			}
 			idx++
 			if !yield(chunk) {
@@ -138,42 +140,4 @@ func retreatOverlapStart(content []byte, minPos, target, fallback int) int {
 
 func isWhitespace(b byte) bool {
 	return b == ' ' || b == '\n'
-}
-
-func copyMeta(src map[string]any) map[string]any {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for k, v := range src {
-		dst[k] = deepCopyValue(v)
-	}
-	return dst
-}
-
-func deepCopyValue(val any) any {
-	switch v := val.(type) {
-	case map[string]any:
-		cp := make(map[string]any, len(v))
-		for k, inner := range v {
-			cp[k] = deepCopyValue(inner)
-		}
-		return cp
-	case []any:
-		cp := make([]any, len(v))
-		for i, inner := range v {
-			cp[i] = deepCopyValue(inner)
-		}
-		return cp
-	case []string:
-		cp := make([]string, len(v))
-		copy(cp, v)
-		return cp
-	case []byte:
-		cp := make([]byte, len(v))
-		copy(cp, v)
-		return cp
-	default:
-		return v
-	}
 }
