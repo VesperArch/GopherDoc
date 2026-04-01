@@ -1,0 +1,49 @@
+# Binaries
+gopherdoc
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+/bin/
+/dist/
+
+# Go environment
+vendor/
+go.work
+go.work.sum
+
+# Test and coverage
+coverage.out
+coverage.html
+*.coverprofile
+
+# Performance profiles
+*.prof
+*.pprof
+*.mprof
+*.trace
+cpu.out
+mem.out
+
+# IDE and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
