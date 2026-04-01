@@ -40,7 +40,7 @@ func TestPipeline_FanOut(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := NewPipeline(newTestRegistry(0))
+			p := NewPipeline(newTestRegistry(0), 0, 0)
 			ctx := context.Background()
 			tasks := make(chan Task, tc.jobs)
 
@@ -73,7 +73,7 @@ func TestPipeline_FanOut(t *testing.T) {
 }
 
 func TestPipeline_MultiFormat(t *testing.T) {
-	p := NewPipeline(newTestRegistry(0))
+	p := NewPipeline(newTestRegistry(0), 0, 0)
 	ctx := context.Background()
 	tasks := make(chan Task, 2)
 
@@ -103,7 +103,7 @@ func TestPipeline_MultiFormat(t *testing.T) {
 }
 
 func TestPipeline_UnsupportedFormat(t *testing.T) {
-	p := NewPipeline(newTestRegistry(0))
+	p := NewPipeline(newTestRegistry(0), 0, 0)
 	ctx := context.Background()
 	tasks := make(chan Task, 1)
 
@@ -130,7 +130,7 @@ func TestPipeline_UnsupportedFormat(t *testing.T) {
 }
 
 func TestPipeline_MissingExtension(t *testing.T) {
-	p := NewPipeline(newTestRegistry(0))
+	p := NewPipeline(newTestRegistry(0), 0, 0)
 	ctx := context.Background()
 	tasks := make(chan Task, 1)
 
@@ -157,7 +157,7 @@ func TestPipeline_MissingExtension(t *testing.T) {
 }
 
 func TestPipeline_ErrorPropagation(t *testing.T) {
-	p := NewPipeline(newTestRegistry(5))
+	p := NewPipeline(newTestRegistry(5), 0, 0)
 	ctx := context.Background()
 	tasks := make(chan Task, 2)
 
@@ -189,7 +189,7 @@ func TestPipeline_ErrorPropagation(t *testing.T) {
 }
 
 func TestPipeline_OpenError(t *testing.T) {
-	p := NewPipeline(newTestRegistry(0))
+	p := NewPipeline(newTestRegistry(0), 0, 0)
 	ctx := context.Background()
 	tasks := make(chan Task, 1)
 
@@ -215,7 +215,7 @@ func TestPipeline_OpenError(t *testing.T) {
 }
 
 func TestPipeline_CancelDrainsWorkers(t *testing.T) {
-	p := NewPipeline(newTestRegistry(0))
+	p := NewPipeline(newTestRegistry(0), 0, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	tasks := make(chan Task)
@@ -240,7 +240,7 @@ func TestPipeline_CancelDrainsWorkers(t *testing.T) {
 
 func TestPipeline_RaceFree(t *testing.T) {
 	const numJobs = 100
-	p := NewPipeline(newTestRegistry(0))
+	p := NewPipeline(newTestRegistry(0), 0, 0)
 	ctx := context.Background()
 	tasks := make(chan Task, numJobs)
 
@@ -263,6 +263,75 @@ func TestPipeline_RaceFree(t *testing.T) {
 
 	if got := count.Load(); got != 200 {
 		t.Fatalf("got %d chunks, want 200", got)
+	}
+}
+
+func TestPipeline_SlidingWindowChunking(t *testing.T) {
+	p := NewPipeline(newTestRegistry(0), 20, 5)
+	ctx := context.Background()
+	tasks := make(chan Task, 1)
+
+	tasks <- Task{
+		ID:   "sw-doc",
+		Name: "sw-doc.txt",
+		Open: readerOpener("The quick brown fox jumps over the lazy dog"),
+	}
+	close(tasks)
+
+	var chunks []string
+	for r := range p.Run(ctx, 1, tasks) {
+		if r.Err != nil {
+			t.Fatalf("unexpected error: %v", r.Err)
+		}
+		chunks = append(chunks, string(r.Doc.Content))
+	}
+
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple sliding window chunks, got %d: %v", len(chunks), chunks)
+	}
+
+	for i := 1; i < len(chunks); i++ {
+		prev := chunks[i-1]
+		cur := chunks[i]
+		overlap := false
+		for w := range len(cur) {
+			end := w + 3
+			if end > len(cur) {
+				break
+			}
+			if strings.Contains(prev, cur[w:end]) {
+				overlap = true
+				break
+			}
+		}
+		if !overlap {
+			t.Errorf("no overlap detected between chunk[%d] and chunk[%d]", i-1, i)
+		}
+	}
+}
+
+func TestPipeline_FallbackToParagraphs(t *testing.T) {
+	p := NewPipeline(newTestRegistry(0), 0, 0)
+	ctx := context.Background()
+	tasks := make(chan Task, 1)
+
+	tasks <- Task{
+		ID:   "para-doc",
+		Name: "para-doc.md",
+		Open: readerOpener("First paragraph.\n\nSecond paragraph.\n\nThird paragraph."),
+	}
+	close(tasks)
+
+	var count int
+	for r := range p.Run(ctx, 1, tasks) {
+		if r.Err != nil {
+			t.Fatalf("unexpected error: %v", r.Err)
+		}
+		count++
+	}
+
+	if count != 3 {
+		t.Fatalf("got %d chunks, want 3 paragraphs", count)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,13 +33,24 @@ type Result struct {
 // Pipeline coordinates parse-then-chunk ingestion across a bounded
 // worker pool. Parser resolution is delegated to the injected Registry,
 // making the pipeline agnostic to specific file formats.
+//
+// ChunkSize and OverlapSize control the sliding window chunker. When
+// ChunkSize is zero or negative the pipeline falls back to paragraph
+// splitting (WithParagraphs).
 type Pipeline struct {
-	registry *parser.Registry
+	ChunkSize   int
+	OverlapSize int
+	registry    *parser.Registry
 }
 
-// NewPipeline returns a Pipeline that resolves parsers through reg.
-func NewPipeline(reg *parser.Registry) *Pipeline {
-	return &Pipeline{registry: reg}
+// NewPipeline returns a Pipeline that resolves parsers through reg and
+// emits chunks according to the given sliding window parameters.
+func NewPipeline(reg *parser.Registry, chunkSize, overlapSize int) *Pipeline {
+	return &Pipeline{
+		ChunkSize:   chunkSize,
+		OverlapSize: overlapSize,
+		registry:    reg,
+	}
 }
 
 // Run starts numWorkers goroutines consuming from tasks and returns a
@@ -116,7 +128,14 @@ func (p *Pipeline) process(ctx context.Context, in Task, out chan<- Result) {
 		}
 	}
 
-	for chunk := range document.WithParagraphs(doc) {
+	var chunks iter.Seq[*document.Document]
+	if p.ChunkSize > 0 {
+		chunks = document.WithSlidingWindow(doc, p.ChunkSize, p.OverlapSize)
+	} else {
+		chunks = document.WithParagraphs(doc)
+	}
+
+	for chunk := range chunks {
 		if ctx.Err() != nil {
 			return
 		}
