@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/vesperarch/gopherdoc/pkg/document"
@@ -15,6 +17,7 @@ import (
 // descriptors are not held while the task sits in a channel buffer.
 type Task struct {
 	ID       string
+	Name     string
 	Open     func() (io.ReadCloser, error)
 	Metadata map[string]any
 }
@@ -27,11 +30,15 @@ type Result struct {
 }
 
 // Pipeline coordinates parse-then-chunk ingestion across a bounded
-// worker pool. The returned Result channel is closed only after every
-// worker has drained the input channel and finished emitting, so
-// ranging over it is safe.
+// worker pool. Parser resolution is delegated to the injected Registry,
+// making the pipeline agnostic to specific file formats.
 type Pipeline struct {
-	Parser *parser.MarkdownParser
+	registry *parser.Registry
+}
+
+// NewPipeline returns a Pipeline that resolves parsers through reg.
+func NewPipeline(reg *parser.Registry) *Pipeline {
+	return &Pipeline{registry: reg}
 }
 
 // Run starts numWorkers goroutines consuming from tasks and returns a
@@ -77,6 +84,18 @@ func (p *Pipeline) worker(ctx context.Context, tasks <-chan Task, out chan<- Res
 }
 
 func (p *Pipeline) process(ctx context.Context, in Task, out chan<- Result) {
+	ext := strings.TrimPrefix(filepath.Ext(in.Name), ".")
+	if ext == "" {
+		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: %s: missing file extension", in.ID)})
+		return
+	}
+
+	pr, err := p.registry.Get(ext)
+	if err != nil {
+		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: %s: unsupported format %q", in.ID, ext)})
+		return
+	}
+
 	rc, err := in.Open()
 	if err != nil {
 		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: open %s: %w", in.ID, err)})
@@ -84,7 +103,7 @@ func (p *Pipeline) process(ctx context.Context, in Task, out chan<- Result) {
 	}
 	defer rc.Close()
 
-	doc, err := p.Parser.Parse(ctx, rc)
+	doc, err := pr.Parse(ctx, rc)
 	if err != nil {
 		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: parse %s: %w", in.ID, err)})
 		return

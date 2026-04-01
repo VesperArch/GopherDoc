@@ -12,6 +12,13 @@ import (
 	"github.com/vesperarch/gopherdoc/pkg/parser"
 )
 
+func newTestRegistry(maxBytes int64) *parser.Registry {
+	reg := parser.NewRegistry()
+	_ = reg.Register("md", &parser.MarkdownParser{MaxBytes: maxBytes})
+	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: maxBytes})
+	return reg
+}
+
 func readerOpener(s string) func() (io.ReadCloser, error) {
 	return func() (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(s)), nil
@@ -33,13 +40,14 @@ func TestPipeline_FanOut(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &Pipeline{Parser: &parser.MarkdownParser{}}
+			p := NewPipeline(newTestRegistry(0))
 			ctx := context.Background()
 			tasks := make(chan Task, tc.jobs)
 
 			for i := range tc.jobs {
 				tasks <- Task{
 					ID:   fmt.Sprintf("doc-%d", i),
+					Name: fmt.Sprintf("doc-%d.md", i),
 					Open: readerOpener(buildBody(tc.paragraphs, i)),
 				}
 			}
@@ -64,14 +72,99 @@ func TestPipeline_FanOut(t *testing.T) {
 	}
 }
 
-func TestPipeline_ErrorPropagation(t *testing.T) {
-	p := &Pipeline{Parser: &parser.MarkdownParser{MaxBytes: 5}}
+func TestPipeline_MultiFormat(t *testing.T) {
+	p := NewPipeline(newTestRegistry(0))
 	ctx := context.Background()
 	tasks := make(chan Task, 2)
 
-	tasks <- Task{ID: "good", Open: readerOpener("Hi")}
 	tasks <- Task{
-		ID: "bad",
+		ID:   "markdown",
+		Name: "readme.md",
+		Open: readerOpener("---\ntitle: Hello\n---\nBody."),
+	}
+	tasks <- Task{
+		ID:   "plain",
+		Name: "notes.txt",
+		Open: readerOpener("Plain text content."),
+	}
+	close(tasks)
+
+	var docs int
+	for r := range p.Run(ctx, 2, tasks) {
+		if r.Err != nil {
+			t.Fatalf("unexpected error: %v", r.Err)
+		}
+		docs++
+	}
+
+	if docs != 2 {
+		t.Errorf("got %d docs, want 2", docs)
+	}
+}
+
+func TestPipeline_UnsupportedFormat(t *testing.T) {
+	p := NewPipeline(newTestRegistry(0))
+	ctx := context.Background()
+	tasks := make(chan Task, 1)
+
+	tasks <- Task{
+		ID:   "unknown",
+		Name: "data.csv",
+		Open: readerOpener("a,b,c"),
+	}
+	close(tasks)
+
+	var errs int
+	for r := range p.Run(ctx, 1, tasks) {
+		if r.Err != nil {
+			errs++
+			if !strings.Contains(r.Err.Error(), "unsupported format") {
+				t.Errorf("unexpected error message: %v", r.Err)
+			}
+		}
+	}
+
+	if errs != 1 {
+		t.Errorf("got %d errors, want 1", errs)
+	}
+}
+
+func TestPipeline_MissingExtension(t *testing.T) {
+	p := NewPipeline(newTestRegistry(0))
+	ctx := context.Background()
+	tasks := make(chan Task, 1)
+
+	tasks <- Task{
+		ID:   "noext",
+		Name: "Makefile",
+		Open: readerOpener("all: build"),
+	}
+	close(tasks)
+
+	var errs int
+	for r := range p.Run(ctx, 1, tasks) {
+		if r.Err != nil {
+			errs++
+			if !strings.Contains(r.Err.Error(), "missing file extension") {
+				t.Errorf("unexpected error message: %v", r.Err)
+			}
+		}
+	}
+
+	if errs != 1 {
+		t.Errorf("got %d errors, want 1", errs)
+	}
+}
+
+func TestPipeline_ErrorPropagation(t *testing.T) {
+	p := NewPipeline(newTestRegistry(5))
+	ctx := context.Background()
+	tasks := make(chan Task, 2)
+
+	tasks <- Task{ID: "good", Name: "good.md", Open: readerOpener("Hi")}
+	tasks <- Task{
+		ID:   "bad",
+		Name: "bad.md",
 		Open: func() (io.ReadCloser, error) {
 			return io.NopCloser(&failReader{}), nil
 		},
@@ -96,12 +189,13 @@ func TestPipeline_ErrorPropagation(t *testing.T) {
 }
 
 func TestPipeline_OpenError(t *testing.T) {
-	p := &Pipeline{Parser: &parser.MarkdownParser{}}
+	p := NewPipeline(newTestRegistry(0))
 	ctx := context.Background()
 	tasks := make(chan Task, 1)
 
 	tasks <- Task{
-		ID: "broken",
+		ID:   "broken",
+		Name: "broken.md",
 		Open: func() (io.ReadCloser, error) {
 			return nil, fmt.Errorf("permission denied")
 		},
@@ -121,7 +215,7 @@ func TestPipeline_OpenError(t *testing.T) {
 }
 
 func TestPipeline_CancelDrainsWorkers(t *testing.T) {
-	p := &Pipeline{Parser: &parser.MarkdownParser{}}
+	p := NewPipeline(newTestRegistry(0))
 	ctx, cancel := context.WithCancel(context.Background())
 
 	tasks := make(chan Task)
@@ -146,13 +240,14 @@ func TestPipeline_CancelDrainsWorkers(t *testing.T) {
 
 func TestPipeline_RaceFree(t *testing.T) {
 	const numJobs = 100
-	p := &Pipeline{Parser: &parser.MarkdownParser{}}
+	p := NewPipeline(newTestRegistry(0))
 	ctx := context.Background()
 	tasks := make(chan Task, numJobs)
 
 	for i := range numJobs {
 		tasks <- Task{
 			ID:   fmt.Sprintf("race-%d", i),
+			Name: fmt.Sprintf("race-%d.md", i),
 			Open: readerOpener("A\n\nB"),
 		}
 	}
@@ -179,7 +274,6 @@ func buildBody(paragraphs, seed int) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// failReader simulates an I/O error on first read.
 type failReader struct{}
 
 func (*failReader) Read([]byte) (int, error) {
