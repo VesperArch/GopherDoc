@@ -74,17 +74,38 @@ func TestWithParagraphs(t *testing.T) {
 
 func TestWithParagraphs_MetadataIsolation(t *testing.T) {
 	doc := &Document{
-		ID:       "doc-iso",
-		Content:  []byte("A\n\nB"),
-		Metadata: map[string]any{"key": "original"},
+		ID:      "doc-iso",
+		Content: []byte("A\n\nB"),
+		Metadata: map[string]any{
+			"key":    "original",
+			"tags":   []string{"a", "b"},
+			"nested": map[string]any{"inner": "value"},
+			"items":  []any{1, "two", []byte{0xFF}},
+		},
 	}
 
 	for chunk := range WithParagraphs(doc) {
 		chunk.Metadata["key"] = "mutated"
+		chunk.Metadata["tags"].([]string)[0] = "MUTATED"
+		chunk.Metadata["nested"].(map[string]any)["inner"] = "MUTATED"
+		chunk.Metadata["items"].([]any)[1] = "MUTATED"
+		chunk.Metadata["items"].([]any)[2].([]byte)[0] = 0x00
 	}
 
 	if doc.Metadata["key"] != "original" {
-		t.Fatal("chunk mutation leaked into source document metadata")
+		t.Fatal("shallow key mutation leaked")
+	}
+	if doc.Metadata["tags"].([]string)[0] != "a" {
+		t.Fatal("[]string mutation leaked into source")
+	}
+	if doc.Metadata["nested"].(map[string]any)["inner"] != "value" {
+		t.Fatal("nested map mutation leaked into source")
+	}
+	if doc.Metadata["items"].([]any)[1] != "two" {
+		t.Fatal("[]any mutation leaked into source")
+	}
+	if doc.Metadata["items"].([]any)[2].([]byte)[0] != 0xFF {
+		t.Fatal("[]byte mutation leaked into source")
 	}
 }
 
