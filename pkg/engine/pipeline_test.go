@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/vesperarch/gopherdoc/pkg/parser"
 )
+
+func readerOpener(s string) func() (io.ReadCloser, error) {
+	return func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(s)), nil
+	}
+}
 
 func TestPipeline_FanOut(t *testing.T) {
 	tests := []struct {
@@ -28,21 +35,18 @@ func TestPipeline_FanOut(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Pipeline{Parser: &parser.MarkdownParser{}}
 			ctx := context.Background()
-			inputs := make(chan Task, tc.jobs)
+			tasks := make(chan Task, tc.jobs)
 
 			for i := range tc.jobs {
-				body := buildBody(tc.paragraphs, i)
-				inputs <- Task{
-					ID:     fmt.Sprintf("doc-%d", i),
-					Reader: strings.NewReader(body),
+				tasks <- Task{
+					ID:   fmt.Sprintf("doc-%d", i),
+					Open: readerOpener(buildBody(tc.paragraphs, i)),
 				}
 			}
-			close(inputs)
-
-			results := p.Run(ctx, tc.workers, inputs)
+			close(tasks)
 
 			var chunks, errs int
-			for r := range results {
+			for r := range p.Run(ctx, tc.workers, tasks) {
 				if r.Err != nil {
 					errs++
 					continue
@@ -63,14 +67,19 @@ func TestPipeline_FanOut(t *testing.T) {
 func TestPipeline_ErrorPropagation(t *testing.T) {
 	p := &Pipeline{Parser: &parser.MarkdownParser{MaxBytes: 5}}
 	ctx := context.Background()
-	inputs := make(chan Task, 2)
+	tasks := make(chan Task, 2)
 
-	inputs <- Task{ID: "good", Reader: strings.NewReader("Hi")}
-	inputs <- Task{ID: "bad", Reader: &failReader{}}
-	close(inputs)
+	tasks <- Task{ID: "good", Open: readerOpener("Hi")}
+	tasks <- Task{
+		ID: "bad",
+		Open: func() (io.ReadCloser, error) {
+			return io.NopCloser(&failReader{}), nil
+		},
+	}
+	close(tasks)
 
 	var docs, errs int
-	for r := range p.Run(ctx, 2, inputs) {
+	for r := range p.Run(ctx, 2, tasks) {
 		if r.Err != nil {
 			errs++
 		} else {
@@ -86,15 +95,40 @@ func TestPipeline_ErrorPropagation(t *testing.T) {
 	}
 }
 
+func TestPipeline_OpenError(t *testing.T) {
+	p := &Pipeline{Parser: &parser.MarkdownParser{}}
+	ctx := context.Background()
+	tasks := make(chan Task, 1)
+
+	tasks <- Task{
+		ID: "broken",
+		Open: func() (io.ReadCloser, error) {
+			return nil, fmt.Errorf("permission denied")
+		},
+	}
+	close(tasks)
+
+	var errs int
+	for r := range p.Run(ctx, 1, tasks) {
+		if r.Err != nil {
+			errs++
+		}
+	}
+
+	if errs != 1 {
+		t.Errorf("got %d errors, want 1", errs)
+	}
+}
+
 func TestPipeline_CancelDrainsWorkers(t *testing.T) {
 	p := &Pipeline{Parser: &parser.MarkdownParser{}}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	inputs := make(chan Task)
-	results := p.Run(ctx, 4, inputs)
+	tasks := make(chan Task)
+	results := p.Run(ctx, 4, tasks)
 
 	cancel()
-	close(inputs)
+	close(tasks)
 
 	done := make(chan struct{})
 	go func() {
@@ -106,7 +140,7 @@ func TestPipeline_CancelDrainsWorkers(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("pipeline did not drain within 2s after cancel")
+		t.Fatal("goroutine leak: pipeline alive 2s after cancel")
 	}
 }
 
@@ -114,18 +148,18 @@ func TestPipeline_RaceFree(t *testing.T) {
 	const numJobs = 100
 	p := &Pipeline{Parser: &parser.MarkdownParser{}}
 	ctx := context.Background()
-	inputs := make(chan Task, numJobs)
+	tasks := make(chan Task, numJobs)
 
 	for i := range numJobs {
-		inputs <- Task{
-			ID:     fmt.Sprintf("race-%d", i),
-			Reader: strings.NewReader("A\n\nB"),
+		tasks <- Task{
+			ID:   fmt.Sprintf("race-%d", i),
+			Open: readerOpener("A\n\nB"),
 		}
 	}
-	close(inputs)
+	close(tasks)
 
 	var count atomic.Int64
-	for r := range p.Run(ctx, 8, inputs) {
+	for r := range p.Run(ctx, 8, tasks) {
 		if r.Err != nil {
 			t.Fatalf("unexpected error: %v", r.Err)
 		}
@@ -145,6 +179,7 @@ func buildBody(paragraphs, seed int) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// failReader simulates an I/O error on first read.
 type failReader struct{}
 
 func (*failReader) Read([]byte) (int, error) {

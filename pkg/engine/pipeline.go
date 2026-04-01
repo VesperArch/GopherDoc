@@ -10,32 +10,34 @@ import (
 	"github.com/vesperarch/gopherdoc/pkg/parser"
 )
 
-// Task is a unit of work fed into a Pipeline.
+// Task describes a document to be ingested. Open is invoked by the
+// worker at processing time rather than at submission time, so file
+// descriptors are not held while the task sits in a channel buffer.
 type Task struct {
 	ID       string
-	Reader   io.Reader
+	Open     func() (io.ReadCloser, error)
 	Metadata map[string]any
 }
 
-// Result carries either a successfully chunked Document or an error.
-// Exactly one of Doc or Err is non-zero.
+// Result is the output of a single pipeline stage. Exactly one of Doc
+// or Err is non-nil.
 type Result struct {
 	Doc *document.Document
 	Err error
 }
 
-// Pipeline orchestrates concurrent document ingestion: each worker
-// parses an Task through MarkdownParser, splits it with
-// WithParagraphs, and emits one Result per chunk. The returned channel
-// is closed after all workers drain the input channel and finish.
+// Pipeline coordinates parse-then-chunk ingestion across a bounded
+// worker pool. The returned Result channel is closed only after every
+// worker has drained the input channel and finished emitting, so
+// ranging over it is safe.
 type Pipeline struct {
 	Parser *parser.MarkdownParser
 }
 
-// Run fans out numWorkers goroutines that consume from inputs and emit
-// Results. The caller must close inputs when done submitting. The
-// returned channel is safe to range over.
-func (p *Pipeline) Run(ctx context.Context, numWorkers int, inputs <-chan Task) <-chan Result {
+// Run starts numWorkers goroutines consuming from tasks and returns a
+// channel of Results. The caller must close tasks when done submitting;
+// the result channel closes itself once all workers exit.
+func (p *Pipeline) Run(ctx context.Context, numWorkers int, tasks <-chan Task) <-chan Result {
 	out := make(chan Result, numWorkers)
 	var wg sync.WaitGroup
 
@@ -43,7 +45,7 @@ func (p *Pipeline) Run(ctx context.Context, numWorkers int, inputs <-chan Task) 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.worker(ctx, inputs, out)
+			p.worker(ctx, tasks, out)
 		}()
 	}
 
@@ -55,12 +57,12 @@ func (p *Pipeline) Run(ctx context.Context, numWorkers int, inputs <-chan Task) 
 	return out
 }
 
-func (p *Pipeline) worker(ctx context.Context, inputs <-chan Task, out chan<- Result) {
+func (p *Pipeline) worker(ctx context.Context, tasks <-chan Task, out chan<- Result) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case in, ok := <-inputs:
+		case in, ok := <-tasks:
 			if !ok {
 				return
 			}
@@ -75,9 +77,16 @@ func (p *Pipeline) worker(ctx context.Context, inputs <-chan Task, out chan<- Re
 }
 
 func (p *Pipeline) process(ctx context.Context, in Task, out chan<- Result) {
-	doc, err := p.Parser.Parse(ctx, in.Reader)
+	rc, err := in.Open()
 	if err != nil {
-		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: %s: %w", in.ID, err)})
+		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: open %s: %w", in.ID, err)})
+		return
+	}
+	defer rc.Close()
+
+	doc, err := p.Parser.Parse(ctx, rc)
+	if err != nil {
+		p.emit(ctx, out, Result{Err: fmt.Errorf("pipeline: parse %s: %w", in.ID, err)})
 		return
 	}
 
