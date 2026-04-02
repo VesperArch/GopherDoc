@@ -11,10 +11,9 @@ gopherdoc
 
 # Go environment
 vendor/
-go.work
-go.work.sum
 
 # Test and coverage
+testdata/
 coverage.out
 coverage.html
 *.coverprofile
