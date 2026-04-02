@@ -7,10 +7,6 @@ import (
 )
 
 // Document is the normalized output of a parsed source.
-//
-// Content holds the full document body in memory. For large documents
-// (>100 MB) callers should stream through io.Reader at the Parser
-// level rather than materializing the entire payload here.
 type Document struct {
 	ID       string
 	Content  []byte

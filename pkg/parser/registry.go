@@ -8,10 +8,7 @@ import (
 	"github.com/vesperarch/gopherdoc/pkg/document"
 )
 
-// Registry is a thread-safe store of Parser implementations keyed by
-// file extension. It is optimized for concurrent read-heavy workloads
-// through sync.RWMutex, allowing many goroutines to resolve parsers
-// simultaneously while writes (registrations) remain exclusive.
+// Registry is a thread-safe store of Parser implementations keyed by file extension.
 type Registry struct {
 	mu      sync.RWMutex
 	parsers map[string]document.Parser
@@ -41,9 +38,7 @@ func (r *Registry) Register(ext string, p document.Parser) error {
 	return nil
 }
 
-// Get returns the Parser registered for ext. The lookup is
-// case-insensitive. If no parser is found, a descriptive error is
-// returned so the caller can surface the unsupported format.
+// Get returns the Parser registered for ext. The lookup is case-insensitive.
 func (r *Registry) Get(ext string) (document.Parser, error) {
 	ext = normalizeExt(ext)
 
@@ -57,7 +52,6 @@ func (r *Registry) Get(ext string) (document.Parser, error) {
 	return p, nil
 }
 
-// normalizeExt lower-cases the extension and ensures it has no leading dot.
 func normalizeExt(ext string) string {
 	ext = strings.ToLower(strings.TrimSpace(ext))
 	ext = strings.TrimPrefix(ext, ".")

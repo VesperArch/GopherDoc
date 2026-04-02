@@ -7,10 +7,9 @@ import (
 	"unicode/utf8"
 )
 
-// WithParagraphs returns an iterator that yields one Document per
-// paragraph (split on "\n\n"). Each yielded Document shares the source
-// document's Metadata map by reference — callers must not mutate
-// chunk.Metadata without first copying it. Empty paragraphs are skipped.
+// WithParagraphs yields one Document per paragraph (split on "\n\n").
+// Each chunk shares the source document's Metadata by reference — callers
+// must not mutate chunk.Metadata without copying it first.
 func WithParagraphs(doc *Document) iter.Seq[*Document] {
 	return func(yield func(*Document) bool) {
 		parts := bytes.Split(doc.Content, []byte("\n\n"))
@@ -34,15 +33,14 @@ func WithParagraphs(doc *Document) iter.Seq[*Document] {
 	}
 }
 
-// WithSlidingWindow returns an iterator that yields fixed-size chunks
-// with a configurable overlap. Each chunk is a zero-copy sub-slice of
-// doc.Content and shares the source document's Metadata map by reference
-// — callers must not mutate chunk.Metadata without first copying it.
+// WithSlidingWindow yields fixed-size chunks with configurable overlap.
+// Each chunk is a zero-copy sub-slice of doc.Content and shares the source
+// document's Metadata by reference — callers must not mutate chunk.Metadata
+// without copying it first.
 //
-// Boundary adjustment: neither the chunk end nor the overlap start will
-// split a UTF-8 rune or break a word. When a boundary falls inside a
-// word the algorithm retreats to the nearest whitespace. If no whitespace
-// exists it falls back to the nearest valid rune boundary.
+// Chunk boundaries never split a UTF-8 rune or a word. When a boundary falls
+// inside a word the algorithm retreats to the nearest whitespace; if none
+// exists it falls back to the nearest rune boundary.
 func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Document] {
 	return func(yield func(*Document) bool) {
 		content := doc.Content
@@ -93,10 +91,8 @@ func WithSlidingWindow(doc *Document, chunkSize, overlapSize int) iter.Seq[*Docu
 	}
 }
 
-// buildChunkID returns "{prefix}{n}" with a single heap allocation for
-// the result string. The intermediate byte buffer is stack-allocated as
-// long as prefix+digits fit within 256 bytes, which covers all realistic
-// document IDs.
+// buildChunkID returns "{prefix}{n}" with a single heap allocation.
+// The intermediate buffer is stack-allocated for IDs up to 256 bytes.
 func buildChunkID(prefix string, n int) string {
 	var arr [256]byte
 	b := append(arr[:0], prefix...)
@@ -104,10 +100,8 @@ func buildChunkID(prefix string, n int) string {
 	return string(b)
 }
 
-// retreatChunkEnd moves targetEnd backwards to the nearest position
-// that does not split a word. A valid end is one where content[end-1]
-// or content[end] is whitespace, meaning the slice content[pos:end]
-// ends at a natural word boundary.
+// retreatChunkEnd moves targetEnd back to the nearest word boundary.
+// Falls back to the nearest UTF-8 rune boundary if no whitespace is found.
 func retreatChunkEnd(content []byte, minPos, targetEnd int) int {
 	if isWhitespace(content[targetEnd]) || isWhitespace(content[targetEnd-1]) {
 		return targetEnd
@@ -126,10 +120,8 @@ func retreatChunkEnd(content []byte, minPos, targetEnd int) int {
 	return targetEnd
 }
 
-// retreatOverlapStart adjusts the overlap origin backwards to the
-// nearest word start (a position preceded by whitespace). If no
-// boundary is found above minPos, returns fallback so the caller
-// advances without overlap rather than looping forever.
+// retreatOverlapStart moves target back to the nearest word start.
+// Returns fallback when no boundary is found above minPos, ensuring progress.
 func retreatOverlapStart(content []byte, minPos, target, fallback int) int {
 	if target > 0 && isWhitespace(content[target-1]) {
 		return target
@@ -147,4 +139,3 @@ func retreatOverlapStart(content []byte, minPos, target, fallback int) int {
 func isWhitespace(b byte) bool {
 	return b == ' ' || b == '\n'
 }
-

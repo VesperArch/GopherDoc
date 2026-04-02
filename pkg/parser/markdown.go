@@ -1,4 +1,4 @@
-// Package parser implements high-performance document parsing with zero external dependencies.
+// Package parser implements document parsing with no external dependencies.
 package parser
 
 import (
@@ -33,10 +33,7 @@ type MarkdownParser struct {
 	MaxBytes int64 // MaxBytes caps the reader; defaults to DefaultMaxBytes if <= 0.
 }
 
-// Parse processes r into a Document using bufio.Reader so that arbitrarily
-// long lines (blobs without newlines) never trigger a "token too long" error.
-// Lines wider than the internal buffer are accumulated in fragments until a
-// newline is found or EOF is reached.
+// Parse reads r and returns a Document with front matter metadata extracted.
 func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Document, error) {
 	limit := p.MaxBytes
 	if limit <= 0 {
@@ -50,9 +47,6 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 	br := bufio.NewReaderSize(io.LimitReader(r, limit), 64<<10)
 	meta := map[string]any{"format": "markdown"}
 	var body bytes.Buffer
-
-	// lineBuf accumulates fragments for lines in seeking/metadata states.
-	// Body lines are written directly to body to avoid the extra allocation.
 	var lineBuf []byte
 	state := stateSeeking
 
@@ -63,7 +57,6 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 
 		frag, isPrefix, err := br.ReadLine()
 		if err == io.EOF {
-			// Process any partial line already accumulated before exiting.
 			if len(lineBuf) > 0 {
 				processLine(lineBuf, state, meta, &body)
 				lineBuf = lineBuf[:0]
@@ -75,8 +68,6 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 		}
 
 		if state == stateBody {
-			// Body lines: write fragments directly into body, never allocating
-			// a temporary string. isPrefix fragments are written as they arrive.
 			body.Write(frag)
 			if !isPrefix {
 				body.WriteByte('\n')
@@ -84,10 +75,9 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 			continue
 		}
 
-		// Seeking / metadata: must see the complete line to inspect it.
 		lineBuf = append(lineBuf, frag...)
 		if isPrefix {
-			continue // more fragments coming for this line
+			continue
 		}
 
 		state = processLine(lineBuf, state, meta, &body)
@@ -100,8 +90,6 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 	}, nil
 }
 
-// processLine dispatches a complete line according to the current state and
-// returns the (possibly updated) state.
 func processLine(line []byte, state parseState, meta map[string]any, body *bytes.Buffer) parseState {
 	lineStr := strings.TrimSpace(string(line))
 
@@ -110,7 +98,6 @@ func processLine(line []byte, state parseState, meta map[string]any, body *bytes
 		if lineStr == frontMatterFence {
 			return stateMetadata
 		}
-		// Not a front-matter fence: treat as the first body line.
 		body.Write(line)
 		body.WriteByte('\n')
 		return stateBody

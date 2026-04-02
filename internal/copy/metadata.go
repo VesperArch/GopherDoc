@@ -1,8 +1,6 @@
 package copy
 
-// Metadata returns a deep copy of a metadata map. Nested maps, slices,
-// and byte slices are recursively copied; scalar values pass through by
-// value (Go's natural copy semantics). reflect is intentionally avoided.
+// Metadata returns a deep copy of src without using reflect.
 func Metadata(src map[string]any) map[string]any {
 	if src == nil {
 		return nil
