@@ -7,28 +7,50 @@ import (
 	"unicode/utf8"
 )
 
+// paragraphSep is the double-newline paragraph boundary.
+// Defined at package level to avoid allocating the slice on every iteration.
+var paragraphSep = []byte("\n\n")
+
 // WithParagraphs yields one Document per paragraph (split on "\n\n").
-// Each chunk shares the source document's Metadata by reference — callers
-// must not mutate chunk.Metadata without copying it first.
+// Each chunk is a zero-copy sub-slice of doc.Content and shares the source
+// document's Metadata by reference — callers must not mutate chunk.Metadata
+// without copying it first.
 func WithParagraphs(doc *Document) iter.Seq[*Document] {
 	return func(yield func(*Document) bool) {
-		parts := bytes.Split(doc.Content, []byte("\n\n"))
+		content := doc.Content
+		if len(content) == 0 {
+			return
+		}
 		prefix := doc.ID + "#p"
 		idx := 0
-		for _, raw := range parts {
+		pos := 0
+
+		for {
+			next := bytes.Index(content[pos:], paragraphSep)
+			var raw []byte
+			if next == -1 {
+				raw = content[pos:]
+			} else {
+				raw = content[pos : pos+next]
+			}
+
 			text := bytes.TrimSpace(raw)
-			if len(text) == 0 {
-				continue
+			if len(text) > 0 {
+				chunk := &Document{
+					ID:       buildChunkID(prefix, idx),
+					Content:  text,
+					Metadata: doc.Metadata,
+				}
+				idx++
+				if !yield(chunk) {
+					return
+				}
 			}
-			chunk := &Document{
-				ID:       buildChunkID(prefix, idx),
-				Content:  text,
-				Metadata: doc.Metadata,
-			}
-			idx++
-			if !yield(chunk) {
+
+			if next == -1 {
 				return
 			}
+			pos += next + len(paragraphSep)
 		}
 	}
 }

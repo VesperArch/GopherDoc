@@ -48,6 +48,32 @@ func TestWithParagraphs(t *testing.T) {
 			wantChunks: 2,
 			wantBodies: []string{"Real content.", "More content."},
 		},
+		{
+			name: "trailing_double_newline",
+			doc: &Document{
+				ID:      "doc-5",
+				Content: []byte("Only one.\n\n"),
+			},
+			wantChunks: 1,
+			wantBodies: []string{"Only one."},
+		},
+		{
+			name: "multiple_consecutive_separators",
+			doc: &Document{
+				ID:      "doc-6",
+				Content: []byte("A\n\n\n\nB"),
+			},
+			wantChunks: 2,
+			wantBodies: []string{"A", "B"},
+		},
+		{
+			name: "only_newlines",
+			doc: &Document{
+				ID:      "doc-7",
+				Content: []byte("\n\n\n\n"),
+			},
+			wantChunks: 0,
+		},
 	}
 
 	for _, tc := range tests {
@@ -113,5 +139,39 @@ func TestWithParagraphs_EarlyBreak(t *testing.T) {
 
 	if count != 2 {
 		t.Fatalf("expected early stop at 2, got %d", count)
+	}
+}
+
+func TestWithParagraphs_ZeroCopy(t *testing.T) {
+	content := []byte("hello\n\nworld")
+	doc := &Document{ID: "zc", Content: content}
+
+	for chunk := range WithParagraphs(doc) {
+		chunk.Content[0] = 'H'
+		break
+	}
+
+	if content[0] != 'H' {
+		t.Fatal("chunk is not a zero-copy sub-slice of the original content")
+	}
+}
+
+// BenchmarkWithParagraphs_Allocs measures allocations per paragraph emitted.
+// With the lazy implementation the only allocation per chunk is the Document
+// struct itself — the content slice is a zero-copy view of the source.
+func BenchmarkWithParagraphs_Allocs(b *testing.B) {
+	const paragraphs = 1000
+	var buf []byte
+	for range paragraphs {
+		buf = append(buf, []byte("Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n\n")...)
+	}
+	doc := &Document{ID: "bench", Content: buf, Metadata: map[string]any{"format": "markdown"}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		for range WithParagraphs(doc) {
+		}
 	}
 }
