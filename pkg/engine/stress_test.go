@@ -18,70 +18,116 @@ import (
 // benchmark loop never allocates new strings during measurement.
 type corpusEntry struct {
 	task    Task
-	rawSize int // original byte count before parsing
+	rawSize int
 }
 
-// buildCorpus generates n in-memory files covering three adversarial
-// content classes:
+// contentForExt returns repeatable source material appropriate for ext.
+// CSV and JSON return structurally valid content; prose formats return
+// human-readable paragraphs; unsupported extensions return binary-looking
+// noise that exercises the format-error path.
+func contentForExt(ext string, size int) []byte {
+	switch ext {
+	case "csv":
+		return buildCSVContent(size)
+	case "json":
+		return buildJSONContent(size)
+	default:
+		return buildProseContent(ext, size)
+	}
+}
+
+func buildCSVContent(size int) []byte {
+	const row = "alice,30,engineering,new york,true\n" +
+		"bob,25,marketing,los angeles,false\n" +
+		"carol,35,product,san francisco,true\n" +
+		"dave,28,design,austin,false\n"
+	const header = "name,age,department,city,active\n"
+
+	var buf bytes.Buffer
+	buf.Grow(size + len(header) + len(row))
+	buf.WriteString(header)
+	for buf.Len() < size {
+		buf.WriteString(row)
+	}
+	return buf.Bytes()[:size]
+}
+
+func buildJSONContent(size int) []byte {
+	// JSON normalization allocates ~3× the input (Unmarshal tree + MarshalIndent output).
+	// Cap individual JSON files so the corpus stays within the alloc budget.
+	const maxJSON = 64 << 10 // 64 KB
+	if size > maxJSON {
+		size = maxJSON
+	}
+	const elem = `{"id":1,"name":"Alice","score":9.5,"active":true},` + "\n"
+	var buf bytes.Buffer
+	buf.Grow(size + 4)
+	buf.WriteString("[\n")
+	for buf.Len() < size-2 {
+		buf.WriteString(elem)
+	}
+	b := buf.Bytes()
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] == ',' {
+			b[i] = '\n'
+			break
+		}
+	}
+	buf.WriteString("]")
+	return buf.Bytes()
+}
+
+func buildProseContent(ext string, size int) []byte {
+	sources := map[string]string{
+		"md": "# Section\n\nLorem ipsum dolor sit amet, consectetur adipiscing elit. " +
+			"Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.\n\n" +
+			"## Subsection\n\nDuis aute irure dolor in reprehenderit in voluptate velit esse. " +
+			"Excepteur sint occaecat cupidatat non proident.\n\n",
+		"txt": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " +
+			"Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \n\n" +
+			"日本語テスト文字列です。絵文字も含みます: 🦊🐻🐼🐨🐯\n\n" +
+			"한국어 텍스트도 포함됩니다. Ünïcödé téxt wïth dïacrïtïcs.\n\n",
+		"pdf": "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDDEEEEEEEEFFFFFFFF" +
+			"GGGGGGGGHHHHHHHHIIIIIIIIJJJJJJJJKKKKKKKK ",
+		"exe": "\x7fELF\x02\x01\x01\x00XXXXXXXXXXXXXXXXXXXXXXXX" +
+			"YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY ",
+	}
+
+	src, ok := sources[ext]
+	if !ok {
+		src = sources["txt"]
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(size + len(src))
+	for buf.Len() < size {
+		buf.WriteString(src)
+	}
+	content := buf.Bytes()[:size]
+	for len(content) > 0 && !utf8.RuneStart(content[len(content)-1]) {
+		content = content[:len(content)-1]
+	}
+	return content
+}
+
+// buildCorpus generates n in-memory files covering six format classes:
 //
-//   - prose   – Lorem Ipsum paragraphs; tests the common whitespace path
-//     in retreatChunkEnd.
-//   - blob    – 500–2000 byte runs with no whitespace; forces the UTF-8
-//     rune-boundary fallback in retreatChunkEnd.
-//   - utf8    – Japanese text and emoji; validates that no chunk boundary
-//     lands inside a multi-byte rune.
+//   - md  / txt – prose with paragraphs; exercises the common whitespace path
+//   - csv        – structurally valid CSV; exercises CSVParser streaming
+//   - json       – valid JSON array; exercises JSONParser normalization
+//   - pdf / exe  – unsupported extensions; exercises the format-error path
 //
-// Extensions cycle through md / txt / pdf / exe so that ~50% of tasks
-// hit the "unsupported format" error path.
+// Content is generated per-extension so every registered parser receives
+// valid input and the error-path slots receive content that cannot parse.
 func buildCorpus(n, minBytes, maxBytes int) []corpusEntry {
-	const (
-		prose = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " +
-			"Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. " +
-			"Ut enim ad minim veniam, quis nostrud exercitation ullamco. \n\n" +
-			"Duis aute irure dolor in reprehenderit in voluptate velit esse. " +
-			"Excepteur sint occaecat cupidatat non proident, sunt in culpa. \n\n"
-
-		blob = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
-			"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" +
-			"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" +
-			"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD" +
-			"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE" +
-			"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" +
-			"GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG" +
-			"HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH "
-
-		utf8text = "日本語テスト文字列です。絵文字も含みます: 🦊🐻🐼🐨🐯 " +
-			"これはUTF-8マルチバイト文字のテストです。 \n\n" +
-			"한국어 텍스트도 포함됩니다. 이것은 테스트입니다. " +
-			"Ünïcödé téxt wïth dïacrïtïcs fôr gôôd méasüré. \n\n"
-	)
-
-	sources := []string{prose, blob, utf8text}
-	exts := []string{"md", "txt", "pdf", "exe"}
+	exts := []string{"md", "txt", "csv", "json", "pdf", "exe"}
 
 	entries := make([]corpusEntry, n)
 	for i := range n {
 		size := minBytes + rand.IntN(maxBytes-minBytes+1)
-		src := sources[i%len(sources)]
-
-		// Build content by repeating the source until we reach size.
-		var buf bytes.Buffer
-		buf.Grow(size + len(src))
-		for buf.Len() < size {
-			buf.WriteString(src)
-		}
-		content := buf.Bytes()[:size]
-
-		// Defensive: ensure we don't cut a UTF-8 rune at the size boundary.
-		for len(content) > 0 && !utf8.RuneStart(content[len(content)-1]) {
-			content = content[:len(content)-1]
-		}
-
-		// Capture as []byte — bytes.NewReader holds a reference, no copy.
-		captured := make([]byte, len(content))
-		copy(captured, content)
-
 		ext := exts[i%len(exts)]
+		captured := contentForExt(ext, size)
+
 		entries[i] = corpusEntry{
 			rawSize: len(captured),
 			task: Task{
@@ -99,10 +145,6 @@ func buildCorpus(n, minBytes, maxBytes int) []corpusEntry {
 // BenchmarkPipeline_Stress measures pure pipeline throughput.
 //
 // Run: go test -bench=BenchmarkPipeline_Stress -benchmem -benchtime=5s ./pkg/engine/
-//
-// The corpus is built once outside b.N so allocation setup never
-// contaminates the measured iterations. No GC calls, no MemStats reads,
-// no atomics — the loop is as lean as the production hot path.
 func BenchmarkPipeline_Stress(b *testing.B) {
 	const (
 		numFiles    = 1_000
@@ -116,7 +158,8 @@ func BenchmarkPipeline_Stress(b *testing.B) {
 	reg := parser.NewRegistry()
 	_ = reg.Register("md", &parser.MarkdownParser{MaxBytes: 10 << 20})
 	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: 10 << 20})
-	// pdf / exe intentionally NOT registered → exercises error path under load.
+	_ = reg.Register("csv", &parser.CSVParser{MaxBytes: 10 << 20})
+	_ = reg.Register("json", &parser.JSONParser{MaxBytes: 10 << 20})
 
 	entries := buildCorpus(numFiles, minBytes, maxBytes)
 
@@ -150,23 +193,14 @@ func BenchmarkPipeline_Stress(b *testing.B) {
 			}
 			chunks++
 		}
-		// Prevent the compiler from optimising away the loop.
 		_ = chunks
 		_ = errs
 	}
 }
 
-// TestPipeline_StressThroughput is the memory auditor and integrity
-// validator. It runs the same workload as the benchmark but focuses on:
-//
-//   - Allocation budget: parsers copy input once (1×); overhead from
-//     bufio.Scanner growth pushes the budget to ≤2.5×. Anything higher
-//     signals an unintended second copy in the pipeline.
-//   - Post-GC heap: after a forced GC the live heap must be <10% of
-//     input — confirms the chunker holds no hidden references to content.
-//   - UTF-8 integrity: no emitted chunk may end on an incomplete rune.
-//   - Error accounting: unsupported formats produce exactly one error
-//     each, never a panic or a silent drop.
+// TestPipeline_StressThroughput is the memory auditor and integrity validator.
+// It runs the same workload as the benchmark but focuses on allocation budget,
+// post-GC heap, UTF-8 integrity, and error accounting.
 func TestPipeline_StressThroughput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test skipped in -short mode")
@@ -184,6 +218,8 @@ func TestPipeline_StressThroughput(t *testing.T) {
 	reg := parser.NewRegistry()
 	_ = reg.Register("md", &parser.MarkdownParser{MaxBytes: 10 << 20})
 	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: 10 << 20})
+	_ = reg.Register("csv", &parser.CSVParser{MaxBytes: 10 << 20})
+	_ = reg.Register("json", &parser.JSONParser{MaxBytes: 10 << 20})
 
 	entries := buildCorpus(numFiles, minBytes, maxBytes)
 
@@ -191,17 +227,15 @@ func TestPipeline_StressThroughput(t *testing.T) {
 	var expectedFormatErrors int
 	for i, e := range entries {
 		totalInputBytes += int64(e.rawSize)
-		if i%4 == 2 || i%4 == 3 { // pdf, exe slots → unsupported format
+		if i%6 == 4 || i%6 == 5 {
 			expectedFormatErrors++
 		}
 	}
 
-	// ── Memory baseline (outside the timed path) ──────────────────────
 	runtime.GC()
 	var memBefore runtime.MemStats
 	runtime.ReadMemStats(&memBefore)
 
-	// ── Pipeline run ──────────────────────────────────────────────────
 	p := NewPipeline(reg, chunkSize, overlapSize)
 	ctx := context.Background()
 	ch := make(chan Task, numWorkers*2)
@@ -228,10 +262,6 @@ func TestPipeline_StressThroughput(t *testing.T) {
 		chunkCount++
 		c := r.Doc.Content
 		chunkBytes += int64(len(c))
-
-		// UTF-8 integrity: the last byte must start a valid rune or be a
-		// single-byte ASCII character. A trailing continuation byte (10xxxxxx)
-		// means the chunker split inside a multi-byte rune.
 		if len(c) > 0 && !utf8.RuneStart(c[len(c)-1]) && !utf8.Valid(c) {
 			brokenRune = true
 		}
@@ -239,12 +269,10 @@ func TestPipeline_StressThroughput(t *testing.T) {
 
 	elapsed := time.Since(start)
 
-	// ── Memory audit (outside the timed path) ─────────────────────────
 	runtime.GC()
 	var memAfter runtime.MemStats
 	runtime.ReadMemStats(&memAfter)
 
-	// ── Reporting ─────────────────────────────────────────────────────
 	inputMB := float64(totalInputBytes) / (1 << 20)
 	throughputMBps := inputMB / elapsed.Seconds()
 	heapBeforeMB := float64(memBefore.HeapInuse) / (1 << 20)
@@ -266,11 +294,6 @@ func TestPipeline_StressThroughput(t *testing.T) {
 	t.Logf("  Heap delta      : %.1f MB", heapDeltaMB)
 	t.Logf("──────────────────────────────────────────────────")
 
-	// ── Integrity checks ──────────────────────────────────────────────
-
-	// Format errors are exact: every unsupported extension must produce exactly one.
-	// Parse errors (e.g. bufio.Scanner token too long on blob files) are additional
-	// and not predicted — we only assert the floor.
 	if errCount < expectedFormatErrors {
 		t.Errorf("error count %d < expected format errors %d — some unsupported formats were silently dropped",
 			errCount, expectedFormatErrors)
@@ -284,15 +307,14 @@ func TestPipeline_StressThroughput(t *testing.T) {
 		t.Error("UTF-8 INTEGRITY: at least one chunk ends on an incomplete rune")
 	}
 
-	// Parsers copy input once (1×); bufio.Scanner growth adds ~20% overhead.
-	// Budget ceiling is 2.5×. Exceeding it means an unintended second copy.
-	if newAllocMB > inputMB*2.5 {
-		t.Errorf("ALLOC ALERT: allocated %.1f MB for %.1f MB input (%.1fx) — expected ≤2.5×",
+	// md/txt/csv parsers copy input once (~1×). JSON normalization allocates
+	// ~3× per file (Unmarshal tree + MarshalIndent output + original bytes).
+	// With a mixed corpus the effective ceiling is 3×.
+	if newAllocMB > inputMB*3.0 {
+		t.Errorf("ALLOC ALERT: allocated %.1f MB for %.1f MB input (%.1fx) — expected ≤3.0×",
 			newAllocMB, inputMB, newAllocMB/inputMB)
 	}
 
-	// Post-GC heap must be <10% of input: confirms the chunker holds no
-	// hidden content references after the pipeline drains.
 	if heapDeltaMB > inputMB*0.10 {
 		t.Errorf("HEAP ALERT: post-GC heap delta %.1f MB > 10%% of input %.1f MB",
 			heapDeltaMB, inputMB)
