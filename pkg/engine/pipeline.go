@@ -135,13 +135,26 @@ func (p *Pipeline) process(ctx context.Context, in Task, out chan<- Result) {
 		chunks = document.WithParagraphs(doc)
 	}
 
+	var prev *document.Document
 	for chunk := range chunks {
+		if prev != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			p.emit(ctx, out, Result{Doc: prev})
+		}
+		prev = chunk
+	}
+	if prev != nil {
+		prev.PoolBuf = doc.PoolBuf
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		p.emit(ctx, out, Result{Doc: chunk})
+		p.emit(ctx, out, Result{Doc: prev})
 	}
 }
 
