@@ -3,65 +3,72 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"strings"
-	"time"
 
-	"github.com/vesperarch/gopherdoc/pkg/document"
 	"github.com/vesperarch/gopherdoc/pkg/engine"
+	"github.com/vesperarch/gopherdoc/pkg/parser"
 )
 
-type fakeParser struct{}
-
-func (fakeParser) Parse(_ context.Context, r interface{ Read([]byte) (int, error) }) (*document.Document, error) {
-	buf := make([]byte, 1024)
-	n, err := r.Read(buf)
-	if err != nil && err.Error() != "EOF" {
-		return nil, fmt.Errorf("fakeparser: read: %w", err)
-	}
-	return &document.Document{
-		ID:      fmt.Sprintf("doc-%d", time.Now().UnixNano()),
-		Content: buf[:n],
-		Metadata: map[string]any{
-			"parser": "fake",
-		},
-	}, nil
-}
-
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	const (
+		chunkSize   = 4 << 10 // 4 KB
+		overlapSize = 512
+		numWorkers  = 4
+	)
 
-	p := fakeParser{}
-	d := engine.NewDispatcher(10)
-	d.Start(ctx, 4)
+	reg := parser.NewRegistry()
+	_ = reg.Register("md", &parser.MarkdownParser{MaxBytes: 10 << 20})
+	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: 10 << 20})
+	_ = reg.Register("csv", &parser.CSVParser{MaxBytes: 10 << 20})
+	_ = reg.Register("json", &parser.JSONParser{MaxBytes: 10 << 20})
 
-	for i := range 10 {
-		i := i
-		if err := d.Submit(ctx, engine.Job{
-			ID: fmt.Sprintf("job-%d", i),
-			Execute: func(ctx context.Context) error {
-				r := strings.NewReader(fmt.Sprintf("conteúdo do documento %d", i))
-				doc, err := p.Parse(ctx, r)
-				if err != nil {
-					return fmt.Errorf("ingestion: doc %d: %w", i, err)
-				}
-				fmt.Printf("[job-%d] id=%s content=%q\n", i, doc.ID, doc.Content)
-				return nil
-			},
-		}); err != nil {
-			log.Fatalf("submit job-%d: %v", i, err)
+	p := engine.NewPipeline(reg, chunkSize, overlapSize)
+	ctx := context.Background()
+
+	tasks := make(chan engine.Task, numWorkers*2)
+	results := p.Run(ctx, numWorkers, tasks)
+
+	go func() {
+		defer close(tasks)
+
+		docs := []struct {
+			id      string
+			name    string
+			content string
+		}{
+			{"doc-1", "article.md", "# Hello\n\nFirst paragraph.\n\nSecond paragraph."},
+			{"doc-2", "notes.txt", "Plain text document.\n\nAnother section here."},
 		}
+
+		for _, d := range docs {
+			d := d
+			tasks <- engine.Task{
+				ID:   d.id,
+				Name: d.name,
+				Open: func() (io.ReadCloser, error) {
+					return io.NopCloser(strings.NewReader(d.content)), nil
+				},
+			}
+		}
+	}()
+
+	var chunks, errs int
+	for r := range results {
+		if r.Err != nil {
+			errs++
+			fmt.Fprintf(os.Stderr, "error: %v\n", r.Err)
+			continue
+		}
+		chunks++
+		fmt.Printf("chunk %s (%d bytes): %q\n", r.Doc.ID, len(r.Doc.Content), r.Doc.Content)
+		r.Doc.Release()
 	}
 
-	d.Close()
-	d.Wait()
-
-	if errs := d.Errs(); len(errs) > 0 {
-		for _, e := range errs {
-			log.Printf("ERROR: %v", e)
-		}
-	} else {
-		fmt.Println("\nall jobs completed successfully")
+	if errs > 0 {
+		log.Fatalf("done: %d chunks, %d errors", chunks, errs)
 	}
+	fmt.Printf("done: %d chunks\n", chunks)
 }

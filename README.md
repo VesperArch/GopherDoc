@@ -58,7 +58,6 @@ import (
     "log"
     "os"
 
-    "github.com/vesperarch/gopherdoc/internal/pool"
     "github.com/vesperarch/gopherdoc/pkg/engine"
     "github.com/vesperarch/gopherdoc/pkg/parser"
 )
@@ -101,12 +100,7 @@ func main() {
         }
 
         fmt.Printf("chunk %s (%d bytes)\n", r.Doc.ID, len(r.Doc.Content))
-
-        // Return the backing buffer to the pool after consuming the last chunk.
-        if r.Doc.PoolBuf != nil {
-            pool.PutBuffer(r.Doc.PoolBuf)
-            r.Doc.PoolBuf = nil
-        }
+        r.Doc.Release()
     }
 }
 ```
@@ -154,10 +148,10 @@ Task (ID, Name, Open)
                    │
                    ▼
             consumer range loop
-                   └─ pool.PutBuffer(Doc.PoolBuf)  ← on last chunk
+                   └─ Doc.Release()  ← on last chunk
 ```
 
-**Buffer ownership rule:** `Document.PoolBuf` is non-nil only on the **last chunk** emitted from a document. The consumer is responsible for calling `pool.PutBuffer` after reading that chunk's content.
+**Buffer ownership rule:** `Document.PoolBuf` is non-nil only on the **last chunk** emitted from a document. Call `Doc.Release()` after consuming that chunk's content to return the buffer to the internal pool.
 
 
 ## Operational Constraints

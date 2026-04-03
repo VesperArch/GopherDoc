@@ -15,7 +15,6 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/vesperarch/gopherdoc/internal/pool"
 	"github.com/vesperarch/gopherdoc/pkg/engine"
 	"github.com/vesperarch/gopherdoc/pkg/parser"
 )
@@ -95,10 +94,7 @@ func main() {
 			if err := enc.Encode(r.Doc); err != nil {
 				log.Fatalf("encode: %v", err)
 			}
-			if r.Doc.PoolBuf != nil {
-				pool.PutBuffer(r.Doc.PoolBuf)
-				r.Doc.PoolBuf = nil
-			}
+			r.Doc.Release()
 		}
 	}()
 
