@@ -1,5 +1,7 @@
 # GopherDoc
 
+**[1,210 MB/s on a commodity i3. No external dependencies. Here's how.](ARCHITECTURE.md)**
+
 **High-throughput streaming ingestion and chunking engine for RAG pipelines. Zero dependencies. Pure Go.**
 
 [![Go 1.23+](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go)](https://go.dev/)
