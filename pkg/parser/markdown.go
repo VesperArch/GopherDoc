@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/vesperarch/gopherdoc/internal/pool"
 	"github.com/vesperarch/gopherdoc/pkg/document"
 )
 
@@ -46,7 +47,7 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 
 	br := bufio.NewReaderSize(io.LimitReader(r, limit), 64<<10)
 	meta := map[string]any{"format": "markdown"}
-	var body bytes.Buffer
+	body := pool.GetBuffer()
 	var lineBuf []byte
 	state := stateSeeking
 
@@ -58,7 +59,7 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 		frag, isPrefix, err := br.ReadLine()
 		if err == io.EOF {
 			if len(lineBuf) > 0 {
-				processLine(lineBuf, state, meta, &body)
+				processLine(lineBuf, state, meta, body)
 				lineBuf = lineBuf[:0]
 			}
 			break
@@ -80,13 +81,14 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 			continue
 		}
 
-		state = processLine(lineBuf, state, meta, &body)
+		state = processLine(lineBuf, state, meta, body)
 		lineBuf = lineBuf[:0]
 	}
 
 	return &document.Document{
 		Content:  bytes.TrimSuffix(body.Bytes(), []byte("\n")),
 		Metadata: meta,
+		PoolBuf:  body,
 	}, nil
 }
 

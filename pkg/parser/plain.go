@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/vesperarch/gopherdoc/internal/pool"
 	"github.com/vesperarch/gopherdoc/pkg/document"
 )
 
@@ -31,7 +32,7 @@ func (p *PlainTextParser) Parse(ctx context.Context, r io.Reader) (*document.Doc
 	}
 
 	br := bufio.NewReaderSize(io.LimitReader(r, limit), 64<<10)
-	var buf bytes.Buffer
+	buf := pool.GetBuffer()
 
 	for {
 		frag, err := br.ReadSlice('\n')
@@ -54,5 +55,6 @@ func (p *PlainTextParser) Parse(ctx context.Context, r io.Reader) (*document.Doc
 	return &document.Document{
 		Content:  bytes.TrimRight(buf.Bytes(), "\n"),
 		Metadata: map[string]any{"format": "plaintext"},
+		PoolBuf:  buf,
 	}, nil
 }

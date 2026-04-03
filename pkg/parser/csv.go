@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/vesperarch/gopherdoc/internal/pool"
 	"github.com/vesperarch/gopherdoc/pkg/document"
 )
 
@@ -43,7 +44,6 @@ func (p *CSVParser) Parse(ctx context.Context, r io.Reader) (*document.Document,
 
 	meta := map[string]any{"format": "csv"}
 
-	// First row is treated as headers.
 	headers, err := cr.Read()
 	if err == io.EOF {
 		return &document.Document{Content: nil, Metadata: meta}, nil
@@ -53,7 +53,7 @@ func (p *CSVParser) Parse(ctx context.Context, r io.Reader) (*document.Document,
 	}
 	meta["columns"] = headers
 
-	var buf bytes.Buffer
+	buf := pool.GetBuffer()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("csv: %w", err)
@@ -72,5 +72,6 @@ func (p *CSVParser) Parse(ctx context.Context, r io.Reader) (*document.Document,
 	return &document.Document{
 		Content:  bytes.TrimRight(buf.Bytes(), "\n"),
 		Metadata: meta,
+		PoolBuf:  buf,
 	}, nil
 }

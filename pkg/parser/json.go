@@ -1,11 +1,13 @@
 package parser
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 
+	"github.com/vesperarch/gopherdoc/internal/pool"
 	"github.com/vesperarch/gopherdoc/pkg/document"
 )
 
@@ -41,13 +43,16 @@ func (p *JSONParser) Parse(ctx context.Context, r io.Reader) (*document.Document
 		return nil, fmt.Errorf("json: %w", err)
 	}
 
-	pretty, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
+	buf := pool.GetBuffer()
+	enc := json.NewEncoder(buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
 		return nil, fmt.Errorf("json: marshal: %w", err)
 	}
 
 	return &document.Document{
-		Content:  pretty,
+		Content:  bytes.TrimRight(buf.Bytes(), "\n"),
 		Metadata: map[string]any{"format": "json"},
+		PoolBuf:  buf,
 	}, nil
 }
