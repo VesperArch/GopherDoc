@@ -2,7 +2,6 @@
 package parser
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -45,7 +44,8 @@ func (p *MarkdownParser) Parse(ctx context.Context, r io.Reader) (*document.Docu
 		return nil, fmt.Errorf("markdown: %w", err)
 	}
 
-	br := bufio.NewReaderSize(io.LimitReader(r, limit), 64<<10)
+	br := pool.GetReader(io.LimitReader(r, limit))
+	defer pool.PutReader(br)
 	meta := map[string]any{"format": "markdown"}
 	body := pool.GetBuffer()
 	var lineBuf []byte

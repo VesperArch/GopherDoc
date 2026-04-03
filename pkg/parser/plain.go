@@ -31,7 +31,8 @@ func (p *PlainTextParser) Parse(ctx context.Context, r io.Reader) (*document.Doc
 		return nil, fmt.Errorf("plaintext: %w", err)
 	}
 
-	br := bufio.NewReaderSize(io.LimitReader(r, limit), 64<<10)
+	br := pool.GetReader(io.LimitReader(r, limit))
+	defer pool.PutReader(br)
 	buf := pool.GetBuffer()
 
 	for {
