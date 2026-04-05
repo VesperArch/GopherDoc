@@ -25,6 +25,7 @@ func main() {
 	limit := flag.Int64("limit", 10<<20, "max bytes per file")
 	chunkSize := flag.Int("chunk-size", 0, "sliding window chunk size in bytes (0 = paragraph mode)")
 	overlapSize := flag.Int("overlap", 0, "sliding window overlap in bytes")
+	ocr := flag.Bool("ocr", false, "enable OCR fallback for scanned PDFs (requires tesseract and pdftoppm)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -35,6 +36,13 @@ func main() {
 	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: *limit})
 	_ = reg.Register("csv", &parser.CSVParser{MaxBytes: *limit})
 	_ = reg.Register("json", &parser.JSONParser{MaxBytes: *limit})
+
+	pdfP := &parser.PDFParser{MaxBytes: *limit, WithOCR: *ocr}
+	if err := pdfP.Available(); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: %v\n", err)
+	} else {
+		_ = reg.Register("pdf", pdfP)
+	}
 
 	tasks := make(chan engine.Task, *workers)
 	p := engine.NewPipeline(reg, *chunkSize, *overlapSize)
