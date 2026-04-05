@@ -110,15 +110,40 @@ func buildProseContent(ext string, size int) []byte {
 	return content
 }
 
+// pdfMockText is 16 KB of prose, large enough to produce multiple 4 KB chunks.
+var pdfMockText = func() []byte {
+	const src = "The quick brown fox jumps over the lazy dog. " +
+		"Pack my box with five dozen liquor jugs. " +
+		"How vexingly quick daft zebras jump! "
+	var b bytes.Buffer
+	for b.Len() < 16<<10 {
+		b.WriteString(src)
+	}
+	return b.Bytes()
+}()
+
+func mockPDFParser(maxBytes int64) *parser.PDFParser {
+	return &parser.PDFParser{
+		MaxBytes: maxBytes,
+		Exec: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "pdftotext" {
+				return pdfMockText, nil
+			}
+			return nil, fmt.Errorf("unexpected command: %s", name)
+		},
+	}
+}
+
 // buildCorpus generates n in-memory files covering six format classes:
 //
 //   - md  / txt – prose with paragraphs; exercises the common whitespace path
 //   - csv        – structurally valid CSV; exercises CSVParser streaming
 //   - json       – valid JSON array; exercises JSONParser normalization
-//   - pdf / exe  – unsupported extensions; exercises the format-error path
+//   - pdf        – ASCII prose; exercises PDFParser tempfile + pool path
+//   - exe        – binary noise; exercises the format-error path
 //
 // Content is generated per-extension so every registered parser receives
-// valid input and the error-path slots receive content that cannot parse.
+// valid input and the error-path slot (exe) receives content that cannot parse.
 func buildCorpus(n, minBytes, maxBytes int) []corpusEntry {
 	exts := []string{"md", "txt", "csv", "json", "pdf", "exe"}
 
@@ -160,6 +185,7 @@ func BenchmarkPipeline_Stress(b *testing.B) {
 	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: 10 << 20})
 	_ = reg.Register("csv", &parser.CSVParser{MaxBytes: 10 << 20})
 	_ = reg.Register("json", &parser.JSONParser{MaxBytes: 10 << 20})
+	_ = reg.Register("pdf", mockPDFParser(10<<20))
 
 	entries := buildCorpus(numFiles, minBytes, maxBytes)
 
@@ -220,6 +246,7 @@ func TestPipeline_StressThroughput(t *testing.T) {
 	_ = reg.Register("txt", &parser.PlainTextParser{MaxBytes: 10 << 20})
 	_ = reg.Register("csv", &parser.CSVParser{MaxBytes: 10 << 20})
 	_ = reg.Register("json", &parser.JSONParser{MaxBytes: 10 << 20})
+	_ = reg.Register("pdf", mockPDFParser(10<<20))
 
 	entries := buildCorpus(numFiles, minBytes, maxBytes)
 
@@ -227,7 +254,7 @@ func TestPipeline_StressThroughput(t *testing.T) {
 	var expectedFormatErrors int
 	for i, e := range entries {
 		totalInputBytes += int64(e.rawSize)
-		if i%6 == 4 || i%6 == 5 {
+		if i%6 == 5 { // exe slot — unsupported format
 			expectedFormatErrors++
 		}
 	}
