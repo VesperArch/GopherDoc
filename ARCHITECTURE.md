@@ -1,7 +1,7 @@
 # GopherDoc — Technical Design Document
 
 **Audience:** Senior Software Engineers, Systems Architects, Computer Scientists
-**Version:** v1.0.1 (`ea8f05c`)
+**Version:** v1.1.0 (`feat/pdf-parser`)
 **Status:** Current
 
 
@@ -94,13 +94,13 @@ This pattern is required because `iter.Seq` (Go 1.23+) does not expose "last ele
 
 ### 2.3 Why the Residual Heap Is Constant
 
-The 2.0 MB post-GC residual heap is a direct consequence of this model: content buffers never accumulate on the heap. Each buffer has exactly one live owner at a time, and that owner returns the buffer to the pool before going out of scope. The pool maintains a bounded number of reusable buffers (64 KB initial capacity, discarded if > 1 MB after growth), ensuring the pool's working set converges to a fixed value regardless of volume processed.
+The 2.4 MB post-GC residual heap is a direct consequence of this model: content buffers never accumulate on the heap. Each buffer has exactly one live owner at a time, and that owner returns the buffer to the pool before going out of scope. The pool maintains a bounded number of reusable buffers (64 KB initial capacity, discarded if > 1 MB after growth), ensuring the pool's working set converges to a fixed value regardless of volume processed.
 
 | Model | Steady-state heap for 2.1 GB input |
 |---|---|
 | Naive (new buffer per document) | Proportional to parallelism × average document size |
 | Pool without explicit ownership | Race conditions → corruption or leaks |
-| **GopherDoc (transferable ownership)** | **Constant: ~2.0 MB** |
+| **GopherDoc (transferable ownership)** | **Constant: 2.4 MB** |
 
 
 ## 3. Zero-Copy Architecture
@@ -284,4 +284,4 @@ For the supported formats (Markdown line-by-line, CSV line-by-line, JSON via `js
 **Decision:** accept the limitation for v1.x. The `io.Reader` contract on the `Parser` interface is intentional — it is not `io.ReadSeeker`.
 
 
-*Implementation reference: [`github.com/VesperArch/GopherDoc`](https://github.com/VesperArch/GopherDoc) @ `v1.0.1`*
+*Implementation reference: [`github.com/VesperArch/GopherDoc`](https://github.com/VesperArch/GopherDoc) @ `v1.1.0`*
